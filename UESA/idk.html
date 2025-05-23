@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mars Colonizer: Astro Realm</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #00ffcc;
+            font-family: 'Arial', sans-serif;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 10px;
+            height: 10px;
+            background: #00ffcc;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        #instructions {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: #ffffff;
+            font-family: 'Arial', sans-serif;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        <p>Oxygen: <span id="oxygen">100</span>%</p>
+        <p>Ores: <span id="ores">0</span></p>
+        <p>Crystals: <span id="crystals">0</span></p>
+        <p>Habitats: <span id="habitats">0</span></p>
+        <p>Solar Panels: <span id="solarPanels">0</span></p>
+        <p>Jetpack: <span id="jetpack">Off</span></p>
+    </div>
+    <div id="crosshair"></div>
+    <div id="instructions">
+        <p>WASD: Move | Space: Jump/Jetpack | Left Click: Mine | Right Click: Build Habitat | Shift+Right Click: Build Solar Panel | E: Toggle Jetpack | T: Toggle Camera | R: Collect Artifact | Find glowing artifacts!</p>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/controls/PointerLockControls.js"></script>
+    <script>
+        // Scene setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 500);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Pointer lock controls
+        const controls = new THREE.PointerLockControls(camera, renderer.domElement);
+        document.addEventListener('click', () => controls.lock());
+        let isFirstPerson = true;
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+        directionalLight.position.set(1, 1, 1);
+        scene.add(directionalLight);
+
+        // Starry skybox
+        const skyGeometry = new THREE.SphereGeometry(250, 16, 16);
+        const skyMaterial = new THREE.MeshBasicMaterial({
+            color: 0x000000,
+            side: THREE.BackSide
+        });
+        const sky = new THREE.Mesh(skyGeometry, skyMaterial);
+        scene.add(sky);
+        // Optimized stars
+        const starGeometry = new THREE.BufferGeometry();
+        const starCount = 500; // Reduced for performance
+        const starPositions = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount * 3; i += 3) {
+            starPositions[i] = (Math.random() - 0.5) * 1000;
+            starPositions[i + 1] = Math.random() * 500;
+            starPositions[i + 2] = (Math.random() - 0.5) * 1000;
+        }
+        starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        const starMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 1 });
+        const stars = new THREE.Points(starGeometry, starMaterial);
+        scene.add(stars);
+
+        // Mars terrain
+        const terrainGeometry = new THREE.PlaneGeometry(100, 100, 32, 32); // Lower res
+        const terrainMaterial = new THREE.MeshStandardMaterial({ color: 0xcc4c33, roughness: 0.8 });
+        const terrain = new THREE.Mesh(terrainGeometry, terrainMaterial);
+        terrain.rotation.x = -Math.PI / 2;
+        const vertices = terrainGeometry.attributes.position.array;
+        for (let i = 0; i < vertices.length; i += 3) {
+            vertices[i + 2] = (Math.random() * 1.5 + Math.sin(vertices[i] * 0.1) * 1.5) * 0.7;
+        }
+        terrainGeometry.attributes.position.needsUpdate = true;
+        terrainGeometry.computeVertexNormals();
+        scene.add(terrain);
+
+        // Astronaut
+        const astronautGeometry = new THREE.BoxGeometry(0.5, 1, 0.5);
+        const astronautMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
+        const astronaut = new THREE.Mesh(astronautGeometry, astronautMaterial);
+        astronaut.position.set(0, 1, 0);
+        scene.add(astronaut);
+
+        // Camera setup
+        camera.position.set(0, 0.5, 0);
+        astronaut.add(camera);
+
+        // Physics
+        const velocity = new THREE.Vector3();
+        const gravity = -0.01;
+        let isJetpackOn = false;
+        let isJumping = false;
+        const moveSpeed = 0.12;
+
+        // Resources and game state
+        let oxygen = 100;
+        let ores = 0;
+        let crystals = 0;
+        let habitats = 0;
+        let solarPanels = 0;
+        const resourceGroup = new THREE.Group();
+        const artifactGroup = new THREE.Group();
+        scene.add(resourceGroup);
+        scene.add(artifactGroup);
+
+        // Resources (ores and crystals)
+        for (let i = 0; i < 15; i++) {
+            const oreGeometry = new THREE.DodecahedronGeometry(0.3);
+            const oreMaterial = new THREE.MeshStandardMaterial({ color: 0x00b7eb });
+            const ore = new THREE.Mesh(oreGeometry, oreMaterial);
+            ore.position.set(
+                (Math.random() - 0.5) * 80,
+                0.5,
+                (Math.random() - 0.5) * 80
+            );
+            ore.userData = { type: 'ore' };
+            resourceGroup.add(ore);
+        }
+        for (let i = 0; i < 10; i++) {
+            const crystalGeometry = new THREE.IcosahedronGeometry(0.25);
+            const crystalMaterial = new THREE.MeshStandardMaterial({ color: 0xff00ff });
+            const crystal = new THREE.Mesh(crystalGeometry, crystalMaterial);
+            crystal.position.set(
+                (Math.random() - 0.5) * 80,
+                0.5,
+                (Math.random() - 0.5) * 80
+            );
+            crystal.userData = { type: 'crystal' };
+            resourceGroup.add(crystal);
+        }
+
+        // Artifacts (rare relics)
+        for (let i = 0; i < 5; i++) {
+            const artifactGeometry = new THREE.SphereGeometry(0.4, 16, 16);
+            const artifactMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0xffff00 });
+            const artifact = new THREE.Mesh(artifactGeometry, artifactMaterial);
+            artifact.position.set(
+                (Math.random() - 0.5) * 80,
+                0.5,
+                (Math.random() - 0.5) * 80
+            );
+            artifactGroup.add(artifact);
+        }
+
+        // Dust storm
+        let isDustStorm = false;
+        let stormTimer = 0;
+        const stormGeometry = new THREE.BufferGeometry();
+        const stormCount = 200;
+        const stormPositions = new Float32Array(stormCount * 3);
+        const stormVelocities = new Float32Array(stormCount * 3);
+        for (let i = 0; i < stormCount * 3; i += 3) {
+            stormPositions[i] = (Math.random() - 0.5) * 100;
+            stormPositions[i + 1] = Math.random() * 5;
+            stormPositions[i + 2] = (Math.random() - 0.5) * 100;
+            stormVelocities[i] = (Math.random() - 0.5) * 0.05;
+            stormVelocities[i + 2] = (Math.random() - 0.5) * 0.05;
+        }
+        stormGeometry.setAttribute('position', new THREE.BufferAttribute(stormPositions, 3));
+        const stormMaterial = new THREE.PointsMaterial({
+            color: 0xcc4c33,
+            size: 0.2,
+            transparent: true,
+            opacity: 0
+        });
+        const storm = new THREE.Points(stormGeometry, stormMaterial);
+        scene.add(storm);
+
+        // Audio
+        const audioListener = new THREE.AudioListener();
+        camera.add(audioListener);
+        const mineSound = new THREE.Audio(audioListener);
+        const buildSound = new THREE.Audio(audioListener);
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        function playSound(sound, frequency, type = 'sine') {
+            const oscillator = audioContext.createOscillator();
+            oscillator.type = type;
+            oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
+            oscillator.connect(audioContext.destination);
+            oscillator.start();
+            oscillator.stop(audioContext.currentTime + 0.1);
+        }
+
+        // Controls
+        const keys = {};
+        document.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            if (e.code === 'KeyE') {
+                isJetpackOn = !isJetpackOn;
+                document.getElementById('jetpack').textContent = isJetpackOn ? 'On' : 'Off';
+            }
+            if (e.code === 'KeyT') {
+                toggleCamera();
+            }
+            if (e.code === 'KeyR') {
+                collectArtifact();
+            }
+        });
+        document.addEventListener('keyup', (e) => keys[e.code] = false);
+
+        // Mouse interaction
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2(0, 0);
+        let lastRaycast = 0;
+        document.addEventListener('mousedown', (e) => {
+            if (e.button === 0) mineResource(); // Left click
+            if (e.button === 2) {
+                if (keys['ShiftLeft'] || keys['ShiftRight']) {
+                    buildSolarPanel();
+                } else {
+                    buildHabitat();
+                }
+            }
+        });
+        document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // Mine resources
+        function mineResource() {
+            if (Date.now() - lastRaycast < 200) return;
+            lastRaycast = Date.now();
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(resourceGroup.children);
+            if (intersects.length > 0) {
+                const resource = intersects[0].object;
+                resourceGroup.remove(resource);
+                if (resource.userData.type === 'ore') ores++;
+                else crystals++;
+                playSound(mineSound, 440);
+                updateHUD();
+            }
+        }
+
+        // Build habitat
+        function buildHabitat() {
+            if (ores < 3 || Date.now() - lastRaycast < 200) return;
+            lastRaycast = Date.now();
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(terrain);
+            if (intersects.length > 0) {
+                ores -= 3;
+                habitats++;
+                const habitatGeometry = new THREE.BoxGeometry(1, 1, 1);
+                const habitatMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 });
+                const habitat = new THREE.Mesh(habitatGeometry, habitatMaterial);
+                habitat.position.copy(intersects[0].point);
+                habitat.position.y += 0.5;
+                scene.add(habitat);
+                playSound(buildSound, 880);
+                updateHUD();
+            }
+        }
+
+        // Build solar panel
+        function buildSolarPanel() {
+            if (ores < 2 || crystals < 1 || Date.now() - lastRaycast < 200) return;
+            lastRaycast = Date.now();
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(terrain);
+            if (intersects.length > 0) {
+                ores -= 2;
+                crystals -= 1;
+                solarPanels++;
+                const panelGeometry = new THREE.BoxGeometry(1.5, 0.2, 1.5);
+                const panelMaterial = new THREE.MeshStandardMaterial({ color: 0x3333ff });
+                const panel = new THREE.Mesh(panelGeometry, panelMaterial);
+                panel.position.copy(intersects[0].point);
+                panel.position.y += 0.1;
+                scene.add(panel);
+                playSound(buildSound, 880);
+                updateHUD();
+            }
+        }
+
+        // Collect artifact
+        function collectArtifact() {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(artifactGroup.children);
+            if (intersects.length > 0) {
+                artifactGroup.remove(intersects[0].object);
+                ores += 5;
+                crystals += 3;
+                playSound(mineSound, 660);
+                updateHUD();
+            }
+        }
+
+        // Toggle camera
+        function toggleCamera() {
+            isFirstPerson = !isFirstPerson;
+            if (isFirstPerson) {
+                camera.position.set(0, 0.5, 0);
+                astronaut.add(camera);
+            } else {
+                scene.add(camera);
+                camera.position.set(astronaut.position.x, astronaut.position.y + 2, astronaut.position.z + 5);
+            }
+        }
+
+        // Update HUD
+        function updateHUD() {
+            document.getElementById('oxygen').textContent = Math.floor(oxygen);
+            document.getElementById('ores').textContent = ores;
+            document.getElementById('crystals').textContent = crystals;
+            document.getElementById('habitats').textContent = habitats;
+            document.getElementById('solarPanels').textContent = solarPanels;
+        }
+
+        // Jetpack particles
+        const jetpackGeometry = new THREE.BufferGeometry();
+        const jetpackCount = 50;
+        const jetpackPositions = new Float32Array(jetpackCount * 3);
+        const jetpackVelocities = new Float32Array(jetpackCount * 3);
+        for (let i = 0; i < jetpackCount * 3; i += 3) {
+            jetpackPositions[i] = astronaut.position.x;
+            jetpackPositions[i + 1] = astronaut.position.y - 0.5;
+            jetpackPositions[i + 2] = astronaut.position.z;
+            jetpackVelocities[i] = (Math.random() - 0.5) * 0.05;
+            jetpackVelocities[i + 1] = -Math.random() * 0.1;
+            jetpackVelocities[i + 2] = (Math.random() - 0.5) * 0.05;
+        }
+        jetpackGeometry.setAttribute('position', new THREE.BufferAttribute(jetpackPositions, 3));
+        const jetpackMaterial = new THREE.PointsMaterial({
+            color: 0xffaa00,
+            size: 0.1,
+            transparent: true,
+            opacity: 0
+        });
+        const jetpackParticles = new THREE.Points(jetpackGeometry, jetpackMaterial);
+        scene.add(jetpackParticles);
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Movement
+            velocity.x = 0;
+            velocity.z = 0;
+            let speed = isDustStorm ? moveSpeed * 0.5 : moveSpeed;
+            if (keys['KeyW']) velocity.z = -speed;
+            if (keys['KeyS']) velocity.z = speed;
+            if (keys['KeyA']) velocity.x = -speed;
+            if (keys['KeyD']) velocity.x = speed;
+
+            // Rotate velocity based on camera
+            const direction = new THREE.Vector3();
+            camera.getWorldDirection(direction);
+            direction.y = 0;
+            direction.normalize();
+            const right = new THREE.Vector3().crossVectors(direction, new THREE.Vector3(0, 1, 0));
+            const move = new THREE.Vector3()
+                .addScaledVector(right, velocity.x)
+                .addScaledVector(direction, velocity.z);
+            astronaut.position.add(move);
+
+            // Apply gravity
+            velocity.y += gravity;
+            astronaut.position.y += velocity.y;
+
+            // Terrain collision
+            const terrainHeight = getTerrainHeight(astronaut.position.x, astronaut.position.z);
+            if (astronaut.position.y < terrainHeight + 1.5) {
+                astronaut.position.y = terrainHeight + 1.5;
+                velocity.y = 0;
+                isJumping = false;
+            }
+
+            // Jump or jetpack
+            if (keys['Space']) {
+                if (isJetpackOn) {
+                    velocity.y = 0.05;
+                    jetpackMaterial.opacity = 1;
+                } else if (!isJumping) {
+                    velocity.y = 0.2;
+                    isJumping = true;
+                }
+            } else {
+                jetpackMaterial.opacity = 0;
+            }
+
+            // Update jetpack particles
+            const jetpackPos = jetpackGeometry.attributes.position.array;
+            for (let i = 0; i < jetpackCount * 3; i += 3) {
+                jetpackPos[i] += jetpackVelocities[i];
+                jetpackPos[i + 1] += jetpackVelocities[i + 1];
+                jetpackPos[i + 2] += jetpackVelocities[i + 2];
+                if (jetpackPos[i + 1] < astronaut.position.y - 2) {
+                    jetpackPos[i] = astronaut.position.x;
+                    jetpackPos[i + 1] = astronaut.position.y - 0.5;
+                    jetpackPos[i + 2] = astronaut.position.z;
+                }
+            }
+            jetpackGeometry.attributes.position.needsUpdate = true;
+
+            // Update camera for third-person
+            if (!isFirstPerson) {
+                camera.position.lerp(
+                    new THREE.Vector3(
+                        astronaut.position.x,
+                        astronaut.position.y + 2,
+                        astronaut.position.z + 5
+                    ),
+                    0.1
+                );
+                camera.lookAt(astronaut.position);
+            }
+
+            // Oxygen system
+            oxygen -= isDustStorm ? 0.05 : 0.02;
+            if (oxygen <= 0) {
+                oxygen = 0; // Game over logic can be added
+            }
+            // Refill near habitats
+            scene.children.forEach((obj) => {
+                if (obj.geometry instanceof THREE.BoxGeometry && obj.material.color.getHex() === 0x888888) {
+                    if (astronaut.position.distanceTo(obj.position) < 2) {
+                        oxygen = Math.min(oxygen + 0.5, 100);
+                    }
+                }
+            });
+
+            // Dust storm
+            stormTimer += 0.016;
+            if (!isDustStorm && Math.random() < 0.005) {
+                isDustStorm = true;
+                stormMaterial.opacity = 0.5;
+            }
+            if (isDustStorm && stormTimer > 10) {
+                isDustStorm = false;
+                stormMaterial.opacity = 0;
+                stormTimer = 0;
+            }
+            const stormPos = stormGeometry.attributes.position.array;
+            for (let i = 0; i < stormCount * 3; i += 3) {
+                stormPos[i] += stormVelocities[i];
+                stormPos[i + 2] += stormVelocities[i + 2];
+                if (Math.abs(stormPos[i]) > 50 || Math.abs(stormPos[i + 2]) > 50) {
+                    stormPos[i] = (Math.random() - 0.5) * 100;
+                    stormPos[i + 2] = (Math.random() - 0.5) * 100;
+                }
+            }
+            stormGeometry.attributes.position.needsUpdate = true;
+
+            updateHUD();
+            renderer.render(scene, camera);
+        }
+
+        // Get terrain height
+        function getTerrainHeight(x, z) {
+            return (Math.sin(x * 0.1) * 1.5 + Math.random() * 1.5) * 0.7;
+        }
+
+        animate();
+
+        // Handle resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

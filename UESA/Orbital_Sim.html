@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mars Colonizer: Astro Realm</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #00ffcc;
+            font-family: 'Arial', sans-serif;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 10px;
+            height: 10px;
+            background: #00ffcc;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        #instructions {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: #ffffff;
+            font-family: 'Arial', sans-serif;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        <p>Resources: <span id="resources">0</span></p>
+        <p>Habitats: <span id="habitats">0</span></p>
+        <p>Jetpack: <span id="jetpack">Off</span></p>
+    </div>
+    <div id="crosshair"></div>
+    <div id="instructions">
+        <p>WASD: Move | Space: Jump/Jetpack | Left Click: Mine | Right Click: Build | E: Toggle Jetpack | T: Toggle Camera | Click to Lock Mouse</p>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/controls/PointerLockControls.js"></script>
+    <script>
+        // Scene setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Pointer lock controls
+        const controls = new THREE.PointerLockControls(camera, renderer.domElement);
+        document.addEventListener('click', () => controls.lock());
+        let isFirstPerson = true;
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+        directionalLight.position.set(1, 1, 1);
+        scene.add(directionalLight);
+
+        // Starry skybox
+        const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
+        const skyMaterial = new THREE.MeshBasicMaterial({
+            color: 0x000000,
+            side: THREE.BackSide
+        });
+        const sky = new THREE.Mesh(skyGeometry, skyMaterial);
+        scene.add(sky);
+        // Add stars
+        const starGeometry = new THREE.BufferGeometry();
+        const starCount = 2000;
+        const starPositions = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount * 3; i += 3) {
+            starPositions[i] = (Math.random() - 0.5) * 2000;
+            starPositions[i + 1] = Math.random() * 1000;
+            starPositions[i + 2] = (Math.random() - 0.5) * 2000;
+        }
+        starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        const starMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 2 });
+        const stars = new THREE.Points(starGeometry, starMaterial);
+        scene.add(stars);
+
+        // Mars terrain
+        const terrainGeometry = new THREE.PlaneGeometry(100, 100, 64, 64);
+        const terrainMaterial = new THREE.MeshStandardMaterial({ color: 0xcc4c33, roughness: 0.8 });
+        const terrain = new THREE.Mesh(terrainGeometry, terrainMaterial);
+        terrain.rotation.x = -Math.PI / 2;
+        // Detailed height variation
+        const vertices = terrainGeometry.attributes.position.array;
+        for (let i = 0; i < vertices.length; i += 3) {
+            vertices[i + 2] = (Math.random() * 2 + Math.sin(vertices[i] * 0.1) * 2) * 0.7;
+        }
+        terrainGeometry.attributes.position.needsUpdate = true;
+        terrainGeometry.computeVertexNormals();
+        scene.add(terrain);
+
+        // Astronaut (placeholder)
+        const astronautGeometry = new THREE.BoxGeometry(0.5, 1, 0.5);
+        const astronautMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
+        const astronaut = new THREE.Mesh(astronautGeometry, astronautMaterial);
+        astronaut.position.set(0, 1, 0);
+        scene.add(astronaut);
+
+        // Camera setup
+        camera.position.set(0, 1.5, 0); // First-person initially
+        astronaut.add(camera); // Attach camera to astronaut for first-person
+
+        // Physics
+        const velocity = new THREE.Vector3();
+        const gravity = -0.01;
+        let isJetpackOn = false;
+        let isJumping = false;
+        const moveSpeed = 0.1;
+
+        // Resources and habitats
+        let resources = 0;
+        let habitats = 0;
+        const resourceGroup = new THREE.Group();
+        scene.add(resourceGroup);
+
+        // Resources (ore-like)
+        for (let i = 0; i < 20; i++) {
+            const resourceGeometry = new THREE.DodecahedronGeometry(0.3);
+            const resourceMaterial = new THREE.MeshStandardMaterial({ color: 0x00b7eb });
+            const resource = new THREE.Mesh(resourceGeometry, resourceMaterial);
+            resource.position.set(
+                (Math.random() - 0.5) * 80,
+                0.5,
+                (Math.random() - 0.5) * 80
+            );
+            resourceGroup.add(resource);
+        }
+
+        // Controls
+        const keys = {};
+        document.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            if (e.code === 'KeyE') {
+                isJetpackOn = !isJetpackOn;
+                document.getElementById('jetpack').textContent = isJetpackOn ? 'On' : 'Off';
+            }
+            if (e.code === 'KeyT') {
+                toggleCamera();
+            }
+        });
+        document.addEventListener('keyup', (e) => keys[e.code] = false);
+
+        // Mouse interaction
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2(0, 0);
+        document.addEventListener('mousedown', (e) => {
+            if (e.button === 0) mineResource(); // Left click
+            if (e.button === 2) buildHabitat(); // Right click
+        });
+        document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // Mine resources
+        function mineResource() {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(resourceGroup.children);
+            if (intersects.length > 0) {
+                resourceGroup.remove(intersects[0].object);
+                resources++;
+                updateHUD();
+            }
+        }
+
+        // Build habitat
+        function buildHabitat() {
+            if (resources < 3) return;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(terrain);
+            if (intersects.length > 0) {
+                resources -= 3;
+                habitats++;
+                const habitatGeometry = new THREE.BoxGeometry(1, 1, 1);
+                const habitatMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 });
+                const habitat = new THREE.Mesh(habitatGeometry, habitatMaterial);
+                habitat.position.copy(intersects[0].point);
+                habitat.position.y += 0.5;
+                scene.add(habitat);
+                updateHUD();
+            }
+        }
+
+        // Toggle camera perspective
+        function toggleCamera() {
+            isFirstPerson = !isFirstPerson;
+            if (isFirstPerson) {
+                camera.position.set(0, 0.5, 0);
+                astronaut.add(camera);
+            } else {
+                scene.add(camera);
+                camera.position.set(astronaut.position.x, astronaut.position.y + 2, astronaut.position.z + 5);
+            }
+        }
+
+        // Update HUD
+        function updateHUD() {
+            document.getElementById('resources').textContent = resources;
+            document.getElementById('habitats').textContent = habitats;
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Movement
+            velocity.x = 0;
+            velocity.z = 0;
+            if (keys['KeyW']) velocity.z = -moveSpeed;
+            if (keys['KeyS']) velocity.z = moveSpeed;
+            if (keys['KeyA']) velocity.x = -moveSpeed;
+            if (keys['KeyD']) velocity.x = moveSpeed;
+
+            // Rotate velocity based on camera direction
+            const direction = new THREE.Vector3();
+            camera.getWorldDirection(direction);
+            direction.y = 0;
+            direction.normalize();
+            const right = new THREE.Vector3().crossVectors(direction, new THREE.Vector3(0, 1, 0));
+            const move = new THREE.Vector3()
+                .addScaledVector(right, velocity.x)
+                .addScaledVector(direction, velocity.z);
+            astronaut.position.add(move);
+
+            // Apply gravity
+            velocity.y += gravity;
+            astronaut.position.y += velocity.y;
+
+            // Terrain collision
+            const terrainHeight = getTerrainHeight(astronaut.position.x, astronaut.position.z);
+            if (astronaut.position.y < terrainHeight + 0.5) {
+                astronaut.position.y = terrainHeight + 0.5;
+                velocity.y = 0;
+                isJumping = false;
+            }
+
+            // Jump or jetpack
+            if (keys['Space']) {
+                if (isJetpackOn) {
+                    velocity.y = 0.05;
+                } else if (!isJumping) {
+                    velocity.y = 0.2;
+                    isJumping = true;
+                }
+            }
+
+            // Update camera for third-person
+            if (!isFirstPerson) {
+                camera.position.lerp(
+                    new THREE.Vector3(
+                        astronaut.position.x,
+                        astronaut.position.y + 2,
+                        astronaut.position.z + 5
+                    ),
+                    0.1
+                );
+                camera.lookAt(astronaut.position);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Get terrain height
+        function getTerrainHeight(x, z) {
+            return (Math.sin(x * 0.1) * 2 + Math.random() * 2) * 0.7;
+        }
+
+        animate();
+
+        // Handle resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

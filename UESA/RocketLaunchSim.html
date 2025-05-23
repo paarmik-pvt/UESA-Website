@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rocket Launch Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        #launchButton {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 15px 25px;
+            background-color: #ff3b30;
+            color: white;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            z-index: 10;
+        }
+        #countdown {
+            position: absolute;
+            top: 70px;
+            left: 20px;
+            font-size: 30px;
+            color: white;
+            font-weight: bold;
+        }
+        #altitude {
+            position: absolute;
+            top: 120px;
+            left: 20px;
+            font-size: 25px;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+
+<button id="launchButton">Launch Rocket!</button>
+<div id="countdown">Ready to Launch: 10</div>
+<div id="altitude">Altitude: 0m</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cannon-es/0.22.0/cannon-es.min.js"></script>
+<script>
+let scene, camera, renderer;
+let rocket, rocketBody, rocketSpeed, rocketHeight;
+let world, clock;
+let isLaunched = false;
+let launchTime = 10;
+let countdownTimer;
+
+// Setting up scene
+scene = new THREE.Scene();
+camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+renderer = new THREE.WebGLRenderer();
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Create a simple rocket using geometries (cone and cylinder)
+let rocketBodyGeometry = new THREE.CylinderGeometry(0.5, 0.5, 3, 32);  // Main body (cylinder)
+let rocketBodyMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+rocket = new THREE.Mesh(rocketBodyGeometry, rocketBodyMaterial);
+rocket.position.set(0, 0, 0);
+scene.add(rocket);
+
+// Rocket's cone tip (top part of the rocket)
+let rocketTipGeometry = new THREE.ConeGeometry(0.5, 2, 4);
+let rocketTipMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+let rocketTip = new THREE.Mesh(rocketTipGeometry, rocketTipMaterial);
+rocketTip.position.set(0, 2.5, 0); // Place it on top of the body
+scene.add(rocketTip);
+
+// Rocket fins (simple 3D planes for the bottom fins)
+let finGeometry = new THREE.PlaneGeometry(1, 1);
+let finMaterial = new THREE.MeshBasicMaterial({ color: 0x0000ff });
+let fin1 = new THREE.Mesh(finGeometry, finMaterial);
+let fin2 = new THREE.Mesh(finGeometry, finMaterial);
+let fin3 = new THREE.Mesh(finGeometry, finMaterial);
+let fin4 = new THREE.Mesh(finGeometry, finMaterial);
+
+// Positioning the fins at the base
+fin1.position.set(-1, -1.5, 0);
+fin2.position.set(1, -1.5, 0);
+fin3.position.set(0, -1.5, 1);
+fin4.position.set(0, -1.5, -1);
+scene.add(fin1, fin2, fin3, fin4);
+
+// Setting up Cannon.js Physics for the rocket
+world = new CANNON.World();
+world.gravity.set(0, -9.82, 0); // Earth-like gravity
+let rocketShape = new CANNON.Cylinder(0.5, 0.5, 3, 32);
+rocketBody = new CANNON.Body({
+    mass: 1,
+    position: new CANNON.Vec3(0, 0, 0)
+});
+rocketBody.addShape(rocketShape);
+world.addBody(rocketBody);
+
+// Camera position
+camera.position.z = 10;
+
+// Sound effects (Basic simulation)
+const audioLoader = new THREE.AudioLoader();
+const listener = new THREE.AudioListener();
+camera.add(listener);
+
+let countdownSound, launchSound;
+audioLoader.load('https://example.com/countdown_sound.mp3', function(buffer) {
+    countdownSound = new THREE.Audio(listener);
+    countdownSound.setBuffer(buffer);
+});
+
+audioLoader.load('https://example.com/launch_sound.mp3', function(buffer) {
+    launchSound = new THREE.Audio(listener);
+    launchSound.setBuffer(buffer);
+    launchSound.setLoop(false);
+    launchSound.setVolume(1);
+});
+
+// Countdown Timer Logic
+function startCountdown() {
+    let countdownDisplay = document.getElementById('countdown');
+    countdownTimer = setInterval(function() {
+        if (launchTime > 0) {
+            countdownDisplay.innerText = "Ready to Launch: " + launchTime;
+            launchTime--;
+            countdownSound.play();
+        } else {
+            clearInterval(countdownTimer);
+            countdownDisplay.innerText = "Liftoff!";
+            initiateLaunch();
+        }
+    }, 1000);
+}
+
+// Rocket Launch Function
+function initiateLaunch() {
+    if (!isLaunched) {
+        isLaunched = true;
+        launchSound.play(); // Play launch sound
+        rocketSpeed = 0.1;  // Initial speed of ascent
+        rocketHeight = 0;
+    }
+}
+
+// Update Rocket Position
+function updateRocketPosition() {
+    if (isLaunched) {
+        rocketHeight += rocketSpeed;
+        rocket.position.y = rocketHeight;
+
+        // Apply thrust force
+        rocketBody.applyImpulse(new CANNON.Vec3(0, 0.1, 0), rocketBody.position);
+
+        // Update altitude display
+        document.getElementById('altitude').innerText = "Altitude: " + Math.round(rocketHeight) + "m";
+
+        // Stop rocket after reaching a certain altitude for realism
+        if (rocketHeight > 500) {
+            rocketSpeed = 0;  // Rocket stops after reaching max altitude
+        }
+    }
+}
+
+// Camera Animation During Launch
+function cameraFollow() {
+    if (isLaunched) {
+        camera.position.y = rocket.position.y + 2; // Follow rocket’s ascent
+        camera.lookAt(rocket.position);  // Keep camera focused on rocket
+    }
+}
+
+// Animation Loop
+function animate() {
+    requestAnimationFrame(animate);
+
+    // Update physics world
+    world.step(1 / 60);
+
+    // Sync rocket position with physics body
+    rocket.position.copy(rocketBody.position);
+    rocket.rotation.copy(rocketBody.rotation);
+
+    // Update rocket altitude, camera and scene
+    updateRocketPosition();
+    cameraFollow();
+
+    renderer.render(scene, camera);
+}
+
+// Start simulation when user clicks the button
+document.getElementById('launchButton').addEventListener('click', function() {
+    startCountdown();
+});
+
+// Window resize event
+window.addEventListener('resize', () => {
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+});
+
+animate();
+</script>
+
+</body>
+</html>
+
